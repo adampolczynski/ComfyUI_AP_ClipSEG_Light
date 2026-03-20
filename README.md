@@ -10,6 +10,7 @@ A lightweight ComfyUI custom node pack that generates segmentation masks from pl
 - **numpy 2.x safe** — all image I/O goes through torch/PIL, no numpy array ops
 - **Auto model caching** — models are kept in GPU/CPU memory after the first load; no reload cost on subsequent runs
 - **numpy 2 / TF crash fix** — automatically stubs broken TensorFlow imports caused by transformers ≥ 4.50 on numpy 2.x systems
+- **Mask Trim utility** — trim any mask by percentage along X/Y axes with feathered edges
 
 ## Requirements
 
@@ -39,7 +40,7 @@ pip install transformers Pillow
 
 ## Node: AP CLIPSeg Text Mask
 
-![AP CLIPSeg Text Mask node](screenshot.png)
+![AP CLIPSeg Text Mask node](examples/screenshot.png)
 
 | Input | Type | Description |
 |---|---|---|
@@ -54,6 +55,25 @@ pip install transformers Pillow
 | `unload_after_run` | BOOLEAN | Free model VRAM after each run |
 
 **Output:** `MASK` — float32 tensor `[B, H, W]` in `[0, 1]`
+
+## Node: AP Mask Trim
+
+![AP Mask Trim node](examples/screenshot2.png)
+
+Trims a mask by percentage along the X and/or Y axis. The output canvas size is unchanged — trimmed pixels fade to black.
+
+| Input | Type | Description |
+|---|---|---|
+| `mask` | MASK | Input mask |
+| `crop_x` | INT (-100–100) | Trim from right (positive) or left (negative). Example: `30` removes rightmost 30 % |
+| `crop_y` | INT (-100–100) | Trim from bottom (positive) or top (negative). Example: `-40` removes top 40 % |
+| `feather` | INT (0–200) | Soft-edge width in pixels at the cut boundary |
+| `mask_dilate` | INT (0–64) | Expand the trimmed mask outward by this many pixels |
+| `mask_blur` | INT (0–64) | Gaussian blur applied to the final mask |
+
+**Output:** `MASK` — trimmed float32 tensor, same dimensions as input
+
+**Tip:** chain `AP CLIPSeg Text Mask (prompt=hair)` → `AP Mask Trim (crop_y=-50, feather=20)` to isolate the top of the head.
 
 ## License
 
