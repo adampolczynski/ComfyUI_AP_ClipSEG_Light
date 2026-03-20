@@ -37,7 +37,9 @@ git clone https://github.com/adampolczynski/ComfyUI_AP_ClipSEG_Light \
 pip install transformers Pillow
 ```
 
-## Node: AP Text Prompt Mask V3
+## Node: AP CLIPSeg Text Mask
+
+![AP CLIPSeg Text Mask node](screenshot.png)
 
 | Input | Type | Description |
 |---|---|---|
@@ -56,4 +58,3 @@ pip install transformers Pillow
 ## License
 
 MIT — see [LICENSE](LICENSE).
-# ComfyUI_AP_ClipSEG_Light
