@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-ap-clipseg-light"
 description = "Lightweight ComfyUI node for text-prompted segmentation masks ◧ using CLIPSeg and mask auto-aligned trim. numpy 2.x safe, TensorFlow-free, auto model caching."
-version = "1.2.0"
+version = "1.3.0"
 license = { file = "LICENSE" }
 readme = "README.md"
 dependencies = ["torchvision>=0.15", "transformers>=4.30", "Pillow>=9.0"]

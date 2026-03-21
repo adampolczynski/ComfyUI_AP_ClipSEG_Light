@@ -36,26 +36,31 @@ def _ensure_tensorflow_importable() -> None:
 
     If TF is broken or absent we insert a minimal stub so:
       1. The import chain completes without a C-extension crash.
-      2. Runtime calls like isinstance(x, tf.Tensor) return False correctly.
+      2. isinstance(x, tf.Tensor) / isinstance(x, tf.Variable) return False
+         correctly — einops iterates TF backend checks on every tensor op and
+         will raise AttributeError if these are missing.
     CLIPSeg inference never calls any real TF functions.
     """
+    # Attrs that external libraries (einops, transformers, keras) may probe on tf.
+    _REQUIRED = ("Tensor", "Variable", "RaggedTensor", "SparseTensor")
+
+    def _patch(tf_mod) -> None:
+        for attr in _REQUIRED:
+            if not hasattr(tf_mod, attr):
+                setattr(tf_mod, attr, type(attr, (), {}))
+
     if "tensorflow" in sys.modules:
-        # Already loaded — check it has the minimum attrs transformers needs.
-        tf = sys.modules["tensorflow"]
-        if not hasattr(tf, "Tensor"):
-            tf.Tensor = type("Tensor", (), {})  # dummy class
+        # Already present (real or stub) — ensure all required attrs exist.
+        _patch(sys.modules["tensorflow"])
         return
 
     try:
         import tensorflow  # noqa: F401
-        # Loaded OK — still ensure Tensor exists (shouldn't be needed, but safe).
-        if not hasattr(tensorflow, "Tensor"):
-            tensorflow.Tensor = type("Tensor", (), {})
+        _patch(tensorflow)
     except Exception:
         stub = types.ModuleType("tensorflow")
-        # Provide the attrs transformers' generic.py and image_transforms.py access.
-        stub.Tensor = type("Tensor", (), {})
         stub.__version__ = "0.0.0"
+        _patch(stub)
         sys.modules["tensorflow"] = stub
         for _sub in (
             "tensorflow.python",
