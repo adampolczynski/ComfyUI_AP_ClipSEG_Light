@@ -67,6 +67,7 @@ Trims a mask by percentage along the X and/or Y axis. The output canvas size is 
 | `mask` | MASK | Input mask |
 | `crop_x` | INT (-100–100) | Trim from right (positive) or left (negative). Example: `30` removes rightmost 30 % |
 | `crop_y` | INT (-100–100) | Trim from bottom (positive) or top (negative). Example: `-40` removes top 40 % |
+| `auto_align` | BOOLEAN | When `True`, trim axes rotate to match the mask's principal orientation (PCA). crop_y trims the mask's own "bottom" regardless of rotation |
 | `feather` | INT (0–200) | Soft-edge width in pixels at the cut boundary |
 | `mask_dilate` | INT (0–64) | Expand the trimmed mask outward by this many pixels |
 | `mask_blur` | INT (0–64) | Gaussian blur applied to the final mask |

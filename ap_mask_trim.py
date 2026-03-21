@@ -5,8 +5,14 @@ crop_y:  positive → trim from bottom, negative → trim from top.
 Values are percentages (-100..100).  The output mask has the same spatial
 dimensions as the input; trimmed pixels fade to 0 over the feather zone.
 
+auto_align: when True, the trim axes rotate to match the mask's principal
+orientation (PCA major/minor axis of the masked region).  crop_y then trims
+the "bottom" of the masked shape regardless of how it is rotated in the image.
+
 Post-processing: optional dilate and blur applied to the trimmed mask.
 """
+
+import math
 
 import torch
 import torch.nn.functional as F
@@ -66,6 +72,127 @@ def _apply_trim(mask: torch.Tensor, crop_x: int, crop_y: int,
     return (mask * weight.unsqueeze(0)).clamp(0.0, 1.0)
 
 
+def _mask_centroid_and_angle(mask_2d: torch.Tensor):
+    """Return (cy, cx, angle_rad) for the masked region.
+
+    angle_rad is the angle the major axis makes with the vertical (y-axis).
+    Computed via weighted PCA on pixel coordinates.
+    """
+    H, W = mask_2d.shape
+    total = mask_2d.sum().item()
+    if total < 1.0:
+        return H / 2.0, W / 2.0, 0.0
+
+    ys = torch.arange(H, device=mask_2d.device, dtype=torch.float32)
+    xs = torch.arange(W, device=mask_2d.device, dtype=torch.float32)
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+
+    cy = (mask_2d * yy).sum().item() / total
+    cx = (mask_2d * xx).sum().item() / total
+
+    dy = yy - cy
+    dx = xx - cx
+
+    muu = (mask_2d * dy * dy).sum().item() / total  # var along y
+    mvv = (mask_2d * dx * dx).sum().item() / total  # var along x
+    muv = (mask_2d * dy * dx).sum().item() / total  # covariance
+
+    # Larger eigenvalue of [[muu, muv],[muv, mvv]] in (y,x) coordinates.
+    half_diff = (muu - mvv) / 2.0
+    disc = math.sqrt(max(0.0, half_diff ** 2 + muv ** 2))
+    lambda_max = (muu + mvv) / 2.0 + disc
+
+    # Eigenvector direction (ey, ex): proportional to (muv, lambda_max - muu).
+    ey = muv
+    ex = lambda_max - muu
+    angle = math.atan2(ex, ey) if (abs(ey) > 1e-6 or abs(ex) > 1e-6) else 0.0
+    return cy, cx, angle
+
+
+def _trim_coord_weight(
+    coord_map: torch.Tensor,
+    mask_ref: torch.Tensor,
+    crop_pct: int,
+    feather_px: int,
+) -> torch.Tensor:
+    """Build an [H, W] weight map that zeros crop_pct% of the mask's extent
+    along coord_map, measured only within the masked region.
+
+    crop_pct > 0: trim from the high-coord end.
+    crop_pct < 0: trim from the low-coord end.
+    """
+    binary = mask_ref > 0.05
+    if not binary.any():
+        return torch.ones_like(coord_map)
+
+    masked_vals = coord_map[binary]
+    min_c = masked_vals.min().item()
+    max_c = masked_vals.max().item()
+    extent = max_c - min_c
+    if extent < 1.0:
+        return torch.ones_like(coord_map)
+
+    cut_amount = abs(crop_pct) / 100.0 * extent
+    fp = float(min(feather_px, cut_amount))
+    w = torch.ones_like(coord_map)
+
+    if crop_pct > 0:  # trim from high end
+        cut_line = max_c - cut_amount
+        w[coord_map > cut_line] = 0.0
+        if fp > 1e-3:
+            fade_mask = (coord_map >= cut_line - fp) & (coord_map <= cut_line)
+            t = ((coord_map[fade_mask] - (cut_line - fp)) / fp).clamp(0.0, 1.0)
+            w[fade_mask] = 1.0 - t
+    else:  # trim from low end
+        cut_line = min_c + cut_amount
+        w[coord_map < cut_line] = 0.0
+        if fp > 1e-3:
+            fade_mask = (coord_map >= cut_line) & (coord_map <= cut_line + fp)
+            t = ((coord_map[fade_mask] - cut_line) / fp).clamp(0.0, 1.0)
+            w[fade_mask] = t
+
+    return w
+
+
+def _apply_trim_aligned(
+    mask: torch.Tensor, crop_x: int, crop_y: int, feather: int
+) -> torch.Tensor:
+    """Trim the mask along its own principal axes (PCA orientation).
+
+    Builds rotated coordinate maps aligned with the major/minor eigenvectors
+    of the masked region, then evaluates the trim entirely in pixel space —
+    no actual image rotation needed.
+    """
+    B, H, W = mask.shape
+    device = mask.device
+
+    ref = mask.float().mean(0)  # mean across batch for stable axis detection
+    cy, cx, angle = _mask_centroid_and_angle(ref)
+
+    ys = torch.arange(H, device=device, dtype=torch.float32)
+    xs = torch.arange(W, device=device, dtype=torch.float32)
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+
+    dy = yy - cy
+    dx = xx - cx
+
+    # Rotate coordinate frame by -angle so major axis aligns with vertical.
+    # In (y, x) 2D: y' = y·cos θ − x·sin θ,  x' = y·sin θ + x·cos θ
+    cos_a = math.cos(-angle)
+    sin_a = math.sin(-angle)
+    dy_r = dy * cos_a - dx * sin_a  # along major axis
+    dx_r = dy * sin_a + dx * cos_a  # along minor axis
+
+    weight = torch.ones(H, W, device=device, dtype=torch.float32)
+
+    if crop_y != 0:
+        weight = weight * _trim_coord_weight(dy_r, ref, crop_y, feather)
+    if crop_x != 0:
+        weight = weight * _trim_coord_weight(dx_r, ref, crop_x, feather)
+
+    return (mask * weight.unsqueeze(0)).clamp(0.0, 1.0)
+
+
 # ---------------------------------------------------------------------------
 # Node
 # ---------------------------------------------------------------------------
@@ -81,6 +208,11 @@ class AP_MaskTrim:
         "  Positive value → trim from the BOTTOM.\n"
         "  Negative value → trim from the TOP.\n"
         "  Example: -40 removes the top 40 % of the mask.\n\n"
+        "auto_align:\n"
+        "  When True, trim axes rotate to match the mask's principal orientation\n"
+        "  (PCA major/minor axes of the masked region).  crop_y then always trims\n"
+        "  the 'bottom' of the masked shape, regardless of how it is rotated in\n"
+        "  the image — useful for tilted heads, diagonal limbs, etc.\n\n"
         "feather:\n"
         "  Soft-edge width in pixels at the cut boundary. 0 = hard cut.\n\n"
         "mask_dilate:\n"
@@ -114,6 +246,16 @@ class AP_MaskTrim:
                         "step": 1,
                         "display": "slider",
                         "tooltip": "Trim % from bottom (positive) or top (negative). 0 = no trim.",
+                    },
+                ),
+                "auto_align": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "When True, trim axes follow the mask's principal orientation (PCA).\n"
+                            "crop_y trims the 'bottom' of the masked shape even when it is rotated."
+                        ),
                     },
                 ),
                 "feather": (
@@ -159,6 +301,7 @@ class AP_MaskTrim:
         mask: torch.Tensor,
         crop_x: int = 0,
         crop_y: int = 0,
+        auto_align: bool = False,
         feather: int = 10,
         mask_dilate: int = 0,
         mask_blur: int = 0,
@@ -167,7 +310,10 @@ class AP_MaskTrim:
         if mask.ndim == 2:
             mask = mask.unsqueeze(0)
 
-        result = _apply_trim(mask, int(crop_x), int(crop_y), int(feather))
+        if bool(auto_align):
+            result = _apply_trim_aligned(mask, int(crop_x), int(crop_y), int(feather))
+        else:
+            result = _apply_trim(mask, int(crop_x), int(crop_y), int(feather))
 
         # Dilate
         if int(mask_dilate) > 0:

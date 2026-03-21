@@ -417,5 +417,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AP_CLIPSeg_TextMask": "AP CLIPSeg Text Mask",
+    "AP_CLIPSeg_TextMask": "◧ AP CLIPSeg Text Mask",
 }
